@@ -232,7 +232,7 @@ def local_correlation(video_data, sz=None, d1=None, d2=None,
     total_frames = video_data.shape[0]
     if total_frames > chunk_size:
         # too many frames, compute correlation images in chunk mode
-        n_chunk = np.floor(total_frames / chunk_size)
+        n_chunk = int(np.floor(total_frames / chunk_size))
 
         cn = np.zeros(shape=(n_chunk, d1, d2))
         for idx in np.arange(n_chunk):
