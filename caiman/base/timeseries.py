@@ -137,7 +137,7 @@ class timeseries(np.ndarray):
         self.meta_data = getattr(obj, 'meta_data', None)
 
 
-    def save(self,file_name, to32 = True):
+    def save(self, file_name, to32=True, clip_percentiles=(1, 99.99999)):
         """
         Save the timeseries in various formats
 
@@ -159,17 +159,16 @@ class timeseries(np.ndarray):
 
         if extension == '.tif': # load avi file
             try:
-                
                 from tifffile import imsave
-                print('tifffile package not found, using skimage instead for imsave')
-                
             except:
-                
+                print('tifffile package not found, using skimage instead for imsave')
                 from skimage.external.tifffile import imsave
-            if to32:    
-                np.clip(self,np.percentile(self,1),np.percentile(self,99.99999),self)
+
+            if clip_percentiles:
+                    np.clip(self,np.percentile(self,clip_percentiles[0]),np.percentile(self,clip_percentiles[1]),self)
+            if to32:
                 minn,maxx = np.min(self),np.max(self)
-                data = 65536 * (self-minn)/(maxx-minn)
+                data = 65535 * (self-minn)/(maxx-minn)
                 data = data.astype(np.int32)
                 imsave(file_name, self.astype(np.float32))
             else:
