@@ -208,11 +208,17 @@ class timeseries(np.ndarray):
                 dset=f.create_dataset("mov",data=np.asarray(self))
                 dset.attrs["fr"]=self.fr
                 dset.attrs["start_time"]=self.start_time
-                try: 
+                try:
                     dset.attrs["file_name"]=[a.encode('utf8') for a in self.file_name]
                 except:
                     print('No file name saved')
-                dset.attrs["meta_data"]=cpk.dumps(self.meta_data)
+
+                metadata_pkl_str = cpk.dumps(self.meta_data)
+                #h5py can only store ASCII-encoded text without NULL bytes (b'\x00')
+                #changing protocol to 0, the "human readable protocol" should fix this
+                if b'\x00' in metadata_pkl_str:
+                    metadata_pkl_str = cpk.dumps(self.meta_data, protocol=0)
+                dset.attrs["meta_data"] = metadata_pkl_str
         else:
             print(extension)
             raise Exception('Extension Unknown')
