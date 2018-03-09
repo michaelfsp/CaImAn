@@ -180,16 +180,21 @@ class timeseries(np.ndarray):
 
 
         elif extension == '.avi':
-            codec=cv2.cv.FOURCC('I','Y','U','V')
+            #codec=cv2.cv.FOURCC('I','Y','U','V')
+            #codec=cv2.VideoWriter_fourcc('I', 'Y', 'U', 'V')
+            codec=cv2.VideoWriter_fourcc(*'MJPG')
             np.clip(self,np.percentile(self,1),np.percentile(self,99),self)
             minn,maxx = np.min(self),np.max(self)
             data = 255 * (self-minn)/(maxx-minn)
             data = data.astype(np.uint8)
             y,x = data[0].shape
             vw = cv2.VideoWriter(file_name, codec, self.fr, (x,y), isColor=True)
+            #vw = cv2.VideoWriter(file_name, codec, self.fr, (x,y), isColor=False)
             for d in data:
                 vw.write(cv2.cvtColor(d, cv2.COLOR_GRAY2BGR))
+                #vw.write(d)
             vw.release()
+            #import ipdb;ipdb.set_trace()
 
         elif extension == '.mat':
             if self.file_name[0] is not None:

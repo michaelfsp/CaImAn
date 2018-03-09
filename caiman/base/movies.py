@@ -195,8 +195,8 @@ class movie(ts.timeseries):
         self=self.apply_shifts(shifts,interpolation=interpolation,method=method)
 
         if remove_blanks:
-            max_h,max_w= np.max(shifts,axis=0)
-            min_h,min_w= np.min(shifts,axis=0)
+            max_h,max_w= np.ceil(np.max(shifts,axis=0)).astype('int')
+            min_h,min_w= np.floor(np.min(shifts,axis=0)).astype('int')
             self=self.crop(crop_top=max_h,crop_bottom=-min_h+1,crop_left=max_w,crop_right=-min_w,crop_begin=0,crop_end=0)
 
 
@@ -281,9 +281,7 @@ class movie(ts.timeseries):
         shifts=[]   # store the amount of shift in each frame
         xcorrs=[]
 
-        for i,frame in enumerate(self):
-            if i%100==99:
-                print(("Frame %i"%(i+1)))
+        for i,frame in enumerate(tqdm(self, desc='Extracting shifts for frame')):
             if method == 'opencv':
                 res = cv2.matchTemplate(frame,template,cv2.TM_CCORR_NORMED)
                 top_left = cv2.minMaxLoc(res)[3]
@@ -347,44 +345,49 @@ class movie(ts.timeseries):
                 interpolation=cv2.INTER_CUBIC
             else:
                 interpolation=3
-            print('cubic interpolation')
+            #print('cubic interpolation')
+            interpolation_type = 'cubic'
 
         elif interpolation == 'nearest':
             if method == 'opencv':
                 interpolation=cv2.INTER_NEAREST
             else:
                 interpolation=0
-            print('nearest interpolation')
+            #print('nearest interpolation')
+            interpolation_type = 'nearest-neighbor'
 
         elif interpolation == 'linear':
             if method=='opencv':
                 interpolation=cv2.INTER_LINEAR
             else:
                 interpolation=1
-            print('linear interpolation')
+            #print('linear interpolation')
+            interpolation_type = 'linear'
+
         elif interpolation == 'area':
             if method=='opencv':
                 interpolation=cv2.INTER_AREA
             else:
                 raise Exception('Method not defined')
-            print('area interpolation')
+            #print('area interpolation')
+            interpolation_type = 'pixel area'
+
         elif interpolation == 'lanczos4':
             if method=='opencv':
                 interpolation=cv2.INTER_LANCZOS4
             else:
                 interpolation=4
-            print('lanczos/biquartic interpolation')
+            #print('lanczos/biquartic interpolation')
+            interpolation_type = 'Lanczos'
         else:
             raise Exception('Interpolation method not available')
 
 
         t,h,w=self.shape
-        for i,frame in enumerate(self):
-            if i%100==99:
-                print(("Frame %i"%(i+1)));
+        for i,frame in enumerate(tqdm(self, desc='Applying {} interpolation to frame'.format(interpolation_type))):
 
             sh_x_n, sh_y_n = shifts[i]
-            
+
             if method == 'opencv':
                 M = np.float32([[1,0,sh_y_n],[0,1,sh_x_n]])
                 min_,max_ = np.min(frame),np.max(frame)
@@ -399,8 +402,8 @@ class movie(ts.timeseries):
                 raise Exception('Unknown shift  application method')
 
         if remove_blanks:
-            max_h,max_w= np.max(shifts,axis=0)
-            min_h,min_w= np.min(shifts,axis=0)
+            max_h,max_w= np.ceil(np.max(shifts,axis=0)).astype('int')
+            min_h,min_w= np.floor(np.min(shifts,axis=0)).astype('int')
             self=self.crop(crop_top=max_h,crop_bottom=-min_h+1,crop_left=max_w,crop_right=-min_w,crop_begin=0,crop_end=0)
 
         return self
@@ -805,12 +808,12 @@ class movie(ts.timeseries):
         T,h,w=self.shape
         Y=np.reshape(self,(T,h*w))
         if masks.ndim == 2:
-            masks = masks[None,:,:] 
-            
+            masks = masks[None,:,:]
+
         nA,_,_=masks.shape
 
         A=np.reshape(masks,(nA,h*w))
-        
+
         pixelsA=np.sum(A,axis=1)
         A=old_div(A,pixelsA[:,None]) # obtain average over ROI
         traces=trace(np.dot(A,np.transpose(Y)).T,**self.__dict__)
@@ -823,11 +826,11 @@ class movie(ts.timeseries):
         elm=d*T
         max_els=2**31-1
         if elm > max_els:
-            chunk_size=old_div((max_els),d)   
+            chunk_size=old_div((max_els),d)
             new_m=[]
             print('Resizing in chunks because of opencv bug')
             for chunk in range(0,T,chunk_size):
-                print([chunk,np.minimum(chunk+chunk_size,T)])                
+                print([chunk,np.minimum(chunk+chunk_size,T)])
                 m_tmp=self[chunk:np.minimum(chunk+chunk_size,T)].copy()
                 m_tmp=m_tmp.resize(fx=fx,fy=fy,fz=fz,interpolation=interpolation)
                 if len(new_m) == 0:
@@ -876,10 +879,32 @@ class movie(ts.timeseries):
             warnings.warn('Casting the array to float 32')
             self=np.asanyarray(self,dtype=np.float32)
 
-        for idx,fr in enumerate(self):
-            if idx%1000==0:
-                print(idx)
+        for idx,fr in enumerate(tqdm(self, desc='Bilateral filter')):
             self[idx] =   cv2.bilateralFilter(fr,diameter,sigmaColor,sigmaSpace)
+
+        return self
+
+    def filter_2D(self, kernel, anchor=(-1,-1), delta=0, ddepth=-1, borderType=cv2.BORDER_REPLICATE):
+        """
+        Compute gaussian blur in 2D. Might be useful when motion correcting
+
+        Parameters
+        ----------
+        kernel_size: double
+            see opencv documentation of GaussianBlur
+        kernel_std_: double
+            see opencv documentation of GaussianBlur
+        borderType: int
+            see opencv documentation of GaussianBlur
+
+        Returns
+        --------
+        self: ndarray
+            blurred movie
+        """
+
+        for idx,fr in enumerate(tqdm(self, desc='Filter 2D')):
+            self[idx] = cv2.filter2D(fr,ddepth=ddepth,kernel=kernel,anchor=anchor,delta=delta,borderType=borderType)
 
         return self
 
