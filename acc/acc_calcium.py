@@ -38,6 +38,7 @@ if ipyparallel:
 else:
     dview = None
 
+from tqdm import tqdm
 
 ##
 #-----------------------------------------------------------------------------
@@ -45,6 +46,8 @@ else:
 #-----------------------------------------------------------------------------
 def load_inscopix(xml_fname, start_time=0, subindices=None, bottom=0, top=0,
                   left=0, right=0, resize=None):
+    '''Load a multi TIFF Inscopix session by concatenation, using the XML metadata file.
+    '''
     #TODO: make it possible to load from a single TIF file name instead. Useful
     # for when nVista crashes without producing an XML file
     import xml.etree.ElementTree as ET
@@ -54,7 +57,7 @@ def load_inscopix(xml_fname, start_time=0, subindices=None, bottom=0, top=0,
     root = et.getroot()
     attrs, decompressed = root.getchildren()
 
-    attr_list  = attrs.getchildren()
+    attr_list = attrs.getchildren()
 
     metadata = {}
     for a in attr_list:
@@ -63,10 +66,10 @@ def load_inscopix(xml_fname, start_time=0, subindices=None, bottom=0, top=0,
     files = decompressed.getchildren()
     frames = []
     filenames = []
-    dir_name =  os.path.dirname(xml_fname)
+    dir_name = os.path.dirname(xml_fname)
     for f in files:
         frames.append(f.get('frames'))
-        filenames.append(os.path.join(dir_name,f.text))
+        filenames.append(os.path.join(dir_name, f.text))
 
     return cm.load_movie_chain(filenames, fr=metadata['fps'], start_time=start_time,
                                    meta_data=metadata, subindices=subindices,
@@ -74,10 +77,11 @@ def load_inscopix(xml_fname, start_time=0, subindices=None, bottom=0, top=0,
                                    #resize=resize)
                                    bottom=bottom, top=top, left=left, right=right)
 
+
 def mem_efficient_norm(m):
     norms = np.zeros(m.shape[0])
     for i, f in enumerate(m):
-       norms[i] = np.sqrt(np.sum(f.astype(np.int)**2))
+        norms[i] = np.sqrt(np.sum(f.astype(np.int)**2))
     return norms
 
 ##
@@ -97,11 +101,27 @@ n_stds = 6#for detection of corrupt frames
 #xml = 'recording_20160716_172303.xml'
 #
 fdir = '/media/hdd_data1/michael/priority/black2/'
+bottom, top, left, right = (1, 30, 100, 80)
 #xml = 'recording_20160716_162425.xml'
 xml = 'recording_20160721_182115.xml'
 
-
 fname = fdir + xml
+
+method = 'rank'
+
+##
+# Check where neurons are for the cropping
+#
+'''
+m_max = np.max(m, axis=0)
+m_avg = np.mean(m, axis=0)
+
+m_maxmean = m_max - m_avg
+
+pl.figure()
+pl.imshow(m_maxmean)
+##
+'''
 
 ##
 #-----------------------------------------------------------------------------
@@ -114,18 +134,8 @@ report = []
 # Black 2
 #m = load_inscopix(fname, bottom=1, top=30, left=100, right=80)
 # Black 1
-m = load_inscopix(fname, bottom=50, top=90, left=95, right=225)
+m = load_inscopix(fname, bottom=bottom, top=top, left=left, right=right)
 
-
-##
-#-----------------------------------------------------------------------------
-#                               Save NPY
-#-----------------------------------------------------------------------------
-#fname_npy = fname.rstrip('.xml') + '_concatenated.npy'
-fname_tif = fname.rstrip('.xml') + '_concatenated.tif'
-
-m.save(fname_tif, to32=False, clip_percentiles=None)
-#FIXME: change tif name
 
 ##
 #-----------------------------------------------------------------------------
@@ -135,6 +145,7 @@ old_corr = cm.summary_images.local_correlations(m, False, False)
 
 pl.figure()
 pl.imshow(old_corr)
+pl.title('Raw data correlation image')
 
 ##
 #-----------------------------------------------------------------------------
@@ -142,80 +153,128 @@ pl.imshow(old_corr)
 #-----------------------------------------------------------------------------
 #TODO: make sure we don't need to crop such that we can detect frames that are
 # corrupted on the edges?
-max_val = m.max()
-if max_val < 2**(n_bits-1):
-    m *= int(np.floor(2**(n_bits-1)/max_val))
-else:
-    m //= int(np.ceil(2**(n_bits-1)/max_val))
-    # //= for old division, i.e. int/int=int
+if method == 'diff_to_avg_frame':
+    max_val = m.max()
+    if max_val < 2**(n_bits-1):
+        m *= int(np.floor(2**(n_bits-1)/max_val))
+    else:
+        m //= int(np.ceil(2**(n_bits-1)/max_val))
+        # //= for old division, i.e. int/int=int
 
-if n_bits == 16:
-    arr_type = np.int16
-elif n_bits == 8:
-    arr_type = np.int8
-m = m.astype(arr_type, copy=False)
+    if n_bits == 16:
+        arr_type = np.int16
+    elif n_bits == 8:
+        arr_type = np.int8
+    m = m.astype(arr_type, copy=False)
 
-frame_avg = np.mean(m, axis=(1,2)).astype(arr_type)
-m -= frame_avg[:,np.newaxis,np.newaxis]
+    frame_avg = np.mean(m, axis=(1,2)).astype(arr_type)
+    m -= frame_avg[:,np.newaxis,np.newaxis]
 
-rms = mem_efficient_norm(m)
-rms -= rms.mean()
-rms_std = np.std(rms)
+    rms = mem_efficient_norm(m)
+    rms -= rms.mean()
+    rms_std = np.std(rms)
 
-#TODO: test for different movies if using a nuclear norm instead of Frobenius
-# norm would make a difference
-crp = np.nonzero(np.abs(rms > n_stds * rms_std))[0]
+    #TODO: test for different movies if using a nuclear norm instead of Frobenius
+    # norm would make a difference
+    crp = np.nonzero(np.abs(rms > n_stds * rms_std))[0]
+
+    pl.figure()
+    pl.plot(rms)
+
+
+elif method == 'smallest_singular_value':
+    ma = np.array(m)# currently necessary due to a bug in CaImAn
+    del(m)# save memory
+
+    s = []
+    for f in tqdm(ma):
+        s.append(np.min(np.linalg.svd(f, compute_uv=False)))
+
+    s_mean = np.mean(s)
+    s_std = np.std(s)
+
+    crp = np.nonzero(np.abs(s < s_mean - 4*s_std))[0]
+
+    pl.figure()
+    pl.plot(s)
+
+
+elif method == 'rank':
+    crp = []# indices of corrupt frames
+    f_shape = m.shape[1:3]
+    smallest_len = min(f_shape)
+    largest_len = max(f_shape)
+    largest_dim = np.argmax(f_shape)
+
+    for i, f in enumerate(tqdm(m)):
+        if np.linalg.matrix_rank(f) < smallest_len:
+            crp.append(i)
+        else:
+            if largest_dim == 0:
+                f_1 = f[0:largest_len//2, :]
+                f_2 = f[largest_len//2:, :]
+
+            elif largest_dim == 1:
+                f_1 = f[:, 0:largest_len//2]
+                f_2 = f[:, largest_len//2:]
+
+            f_1_rank = np.linalg.matrix_rank(f_1)
+            f_2_rank = np.linalg.matrix_rank(f_2)
+
+            if f_1_rank < min(f_1.shape) or f_2_rank < min(f_2.shape):
+                crp.append(i)
+
 
 #TODO: instead of using first this to detect corrupt frames and then the
 #difference to the average between frame before and after use already the second
 #to detect corrupt frames
 
-pl.figure()
-pl.plot(rms)
-
 ##
 #-----------------------------------------------------------------------------
 #                               Reload Movie
 #-----------------------------------------------------------------------------
-m = load_inscopix(fname)
+if method != 'rank':
+    m = load_inscopix(fname, bottom=bottom, top=top, left=left, right=right)
+
 
 ##
 #-----------------------------------------------------------------------------
 #                            Fix Corrupt Frames
 #-----------------------------------------------------------------------------
-to_fix = np.copy(crp)
+if crp:
+    to_fix = np.copy(crp)
 
-for i in to_fix:
-    pl.figure()
-    pl.imshow(m[i,:,:])
-
-if 0 in to_fix:
-    m[0,:,:] = m[1,:,:]
-    to_fix = to_fix[1:]
-
-if m.shape[0] in to_fix:
-    m[-1,:,:] = m[-2,:,:]
-    to_fix = to_fix[:-1]
-
-to_fix_before = np.copy(to_fix)
-
-err = m.shape[1]*m.shape[2]
-#rmse = np.linalg.norm(m[to_fix,:,:] - np.mean((m[to_fix-1,:,:],
-#                                               m[to_fix+1,:,:]), axis=0),
-#                      axis=(1,2))
-#while np.any(rmse > err):
-while len(to_fix) > 0:
-    print(to_fix)
     for i in to_fix:
-# in case it is the first or last frame there's nothing to interpolate from
-# so we cheat and substitute by the neighbouring frame
-        m[i,:,:] = np.mean((m[i-1,:,:], m[i+1,:,:]), axis=0)
+        pl.figure()
+        pl.imshow(m[i,:,:])
 
-    i_still_to_fix = np.nonzero(np.any(np.abs(m[to_fix_before,:,:] -
-                                              np.mean((m[to_fix_before-1,:,:],
-                                               m[to_fix_before+1,:,:]), axis=0)) > 0.5,
-                      axis=(1,2)))[0]
-    to_fix = to_fix_before[i_still_to_fix]
+    if 0 in to_fix:
+        m[0,:,:] = m[1,:,:]
+        to_fix = to_fix[1:]
+
+    if m.shape[0] in to_fix:
+        m[-1,:,:] = m[-2,:,:]
+        to_fix = to_fix[:-1]
+
+    to_fix_before = np.copy(to_fix)
+
+    err = m.shape[1]*m.shape[2]
+    #rmse = np.linalg.norm(m[to_fix,:,:] - np.mean((m[to_fix-1,:,:],
+    #                                               m[to_fix+1,:,:]), axis=0),
+    #                      axis=(1,2))
+    #while np.any(rmse > err):
+    while len(to_fix) > 0:
+        print(to_fix)
+        for i in to_fix:
+    # in case it is the first or last frame there's nothing to interpolate from
+    # so we cheat and substitute by the neighbouring frame
+            m[i,:,:] = np.mean((m[i-1,:,:], m[i+1,:,:]), axis=0)
+
+        i_still_to_fix = np.nonzero(np.any(np.abs(m[to_fix_before,:,:] -
+                                                  np.mean((m[to_fix_before-1,:,:],
+                                                   m[to_fix_before+1,:,:]), axis=0)) > 0.5,
+                          axis=(1,2)))[0]
+        to_fix = to_fix_before[i_still_to_fix]
 
 # we need to add back its neighbours if they were fixed before too
 
@@ -232,6 +291,17 @@ while len(to_fix) > 0:
     #    rmse = np.linalg.norm(m[to_fix,:,:] - np.mean((m[to_fix-1,:,:],
 #                                               m[to_fix+1,:,:]), axis=0),
 #                      axis=(1,2))
+
+##
+#-----------------------------------------------------------------------------
+#                               Save NPY
+#-----------------------------------------------------------------------------
+#fname_npy = fname.rstrip('.xml') + '_concatenated.npy'
+fname_tif = fname.rstrip('.xml') + '_concatenated.tif'
+
+m.save(fname_tif, to32=False, clip_percentiles=None)
+#FIXME: change tif name
+
 
 ##
 #-----------------------------------------------------------------------------
@@ -357,10 +427,10 @@ report = ['batch\t',smoothness_b, smoothness_corr_b, '\n'] + report
 #                  resize=(0.25, 0.25))
 #m = m.crop(bound, bound, bound, bound)
 
-m = cm.load(fname) #reload movie
+m = cm.load(fname_tif) #reload movie
 
-max_h,max_w = np.ceil(np.max(shifts_rig,axis=0)).astype('int')
-min_h,min_w = np.floor(np.min(shifts_rig,axis=0)).astype('int')
+max_h,max_w = np.ceil(np.max(mcf.shifts_rig,axis=0)).astype('int')
+min_h,min_w = np.floor(np.min(mcf.shifts_rig,axis=0)).astype('int')
 
 m = m.crop(crop_top=max_h, crop_bottom=-min_h, crop_left=max_w
                ,crop_right=-min_w, crop_begin=0,crop_end=0)
@@ -380,97 +450,5 @@ template_o, correlations_o, flows_o, norms_o, smoothness_o, img_corr_o, smoothne
 report = ['original\t',smoothness_o, smoothness_corr_o, '\n'] + report
 
 print(*report)
-'''
-
-#fname = '/home/michael/data/imaging/20170217/b/recording_half_sized_noclipping.tif'
-
-#    return np.nonzero(np.abs(rmse > n_stds * rmse_std))
-
-#crp = detect_corrupt_frames(m)
-
-
-#def interpolate_corrupt(m):
-#m_avg = np.mean(m, axis=0).astype('uint16')
-#
-#m += np.max(m_avg)
-#
-#m -= m_avg
-
-#m_diff_norms = np.linalg.norm(m, axis=(1,2))
-'''
-'''
-dets = []
-diff_norms = []
-mean_frame = np.mean(m, axis=0)
-
-for t in range(1, m.shape[0]-2):
-#We calculate the difference between each frame and the avg. between the
-#preceeding and succeeding frames
-#    diff_norms.append(np.linalg.norm(m[t,:,:] - np.mean(m[t-1:t+2:2,:,:],
-#                                                 axis=0)))
-    #diff_norms.append(np.linalg.norm(m[t,:,:] - mean_frame))
-    diff_norms.append(np.linalg.norm(m[t,:,:]))
-    dets.append(np.linalg.det(m[t,:,:]))
-
-#TODO: for each pixel difference to smoothed, then calculate it's distribution
-#   then save the times when it is >4*std. Lastly look at frames where this
-#   happens for a very high number of pixels
-
-diff_norms_delta = np.diff(diff_norms)
-diff_norms_delta -= np.mean(diff_norms_delta)
-
-pl.figure()
-pl.plot(diff_norms_delta)
-pl.hlines(4*np.std(diff_norms_delta), *pl.xlim())
-
-outliers_i = np.nonzero(np.abs(diff_norms_delta) >
-                      4*np.std(diff_norms_delta))[0] + 1
-
-pl.figure()
-for i in outliers_i:
-    pl.clf()
-    #pl.figure()
-    pl.imshow(m[i,:,:]) 
-    input('Press key to continue')
-
-#TODO: check first and last frame are not corrupt
-        
-    m_diff_norms_delta = np.diff(m_diff_norms)
-
-old_diff_norms_delta = np.copy(m_diff_norms_delta)
-
-outliers_i = np.nonzero(np.abs(m_diff_norms_delta) >
-                      4*np.std(m_diff_norms_delta))[0]
-
-for i in outliers_i:
-    m[i] = np.mean(m[(i-1,i+1),:,:], axis=0)
-
-m_avg = np.mean(m, axis=0).astype('uint16')
-
-m += np.max(m_avg)
-
-m -= m_avg
-
-m_diff_norms = np.linalg.norm(m, axis=(1,2))
-
-m_diff_norms_delta = np.diff(m_diff_norms)
-
-pl.figure()
-pl.plot(old_diff_norms_delta)
-pl.plot(new_m_diff_norms_delta)
 
 pl.show()
-'''
-##
-# Check where neurons are for the cropping
-#
-'''
-m_max = np.max(m, axis=0)
-m_avg = np.mean(m, axis=0)
-
-m_maxmean = m_max - m_avg
-
-pl.figure()
-pl.imshow(m_maxmean)
-##
-'''
