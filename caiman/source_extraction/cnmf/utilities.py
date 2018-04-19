@@ -24,20 +24,21 @@ from builtins import str
 from builtins import range
 from past.utils import old_div
 import numpy as np
-from scipy.sparse import diags, spdiags, issparse
+from scipy.sparse import spdiags, issparse, csc_matrix
 from .initialization import greedyROI
 from ...base.rois import com
 import pylab as pl
-import psutil
 import scipy
 from ...mmapping import parallel_dot_product
 
 
 #%%
-def CNMFSetParms(Y, n_processes, K=30, gSig=[5, 5], ssub=2, tsub=2, p=2, p_ssub=2, p_tsub=2,
+def CNMFSetParms(Y, n_processes, K=30, gSig=[5, 5], gSiz=None, ssub=2, tsub=2, p=2, p_ssub=2, p_tsub=2,
                  thr=0.8, method_init='greedy_roi', nb=1, nb_patch=1, n_pixels_per_process=None, block_size=None,
                  check_nan=True, normalize_init=True, options_local_NMF=None, remove_very_bad_comps=False,
-                 alpha_snmf=10e2, update_background_components=True, low_rank_background=True):
+                 alpha_snmf=10e2, update_background_components=True, low_rank_background=True, rolling_sum=False,
+                 min_corr=.85, min_pnr=20, deconvolve_options_init=None,
+                 ring_size_factor=1.5, center_psf=True):
     """Dictionary for setting the CNMF parameters.
 
     Any parameter that is not set get a default value specified
@@ -117,7 +118,7 @@ def CNMFSetParms(Y, n_processes, K=30, gSig=[5, 5], ssub=2, tsub=2, p=2, p_ssub=
         whether to pixelwise equalize the movies during initialization
 
     options_local_NMF:
-        dictionary with parameters to pass to local_NMF initializaer
+        dictionary with parameters to pass to local_NMF initializer
 
     SPATIAL PARAMS##########
 
@@ -252,11 +253,12 @@ def CNMFSetParms(Y, n_processes, K=30, gSig=[5, 5], ssub=2, tsub=2, p=2, p_ssub=
                                     'check_nan': check_nan
 
                                     }
+
     gSig = gSig if gSig is not None else [-1, -1]
 
     options['init_params'] = {'K': K,                  # number of components
                               'gSig': gSig,                               # size of bounding box
-                              'gSiz': [int(round((x * 2) + 1)) for x in gSig],
+                              'gSiz': [np.int(np.round((x * 2) + 1)) for x in gSig] if gSiz is None else gSiz,
                               'ssub': ssub,             # spatial downsampling factor
                               'tsub': tsub,             # temporal downsampling factor
                               'nIter': 5,               # number of refinement iterations
@@ -271,7 +273,14 @@ def CNMFSetParms(Y, n_processes, K=30, gSig=[5, 5], ssub=2, tsub=2, p=2, p_ssub=
                               # whether to pixelwise equalize the movies during initialization
                               'normalize_init': normalize_init,
                               # dictionary with parameters to pass to local_NMF initializaer
-                              'options_local_NMF': options_local_NMF
+                              'options_local_NMF': options_local_NMF,
+                              'rolling_sum': rolling_sum,
+                              'rolling_length': 100,
+                              'min_corr': min_corr,
+                              'min_pnr': min_pnr,
+                              'deconvolve_options_init': deconvolve_options_init,
+                              'ring_size_factor': ring_size_factor,
+                              'center_psf': center_psf,
                               }
 
     options['spatial_params'] = {
@@ -279,8 +288,10 @@ def CNMFSetParms(Y, n_processes, K=30, gSig=[5, 5], ssub=2, tsub=2, p=2, p_ssub=
         # method for determining footprint of spatial components ('ellipse' or 'dilate')
         'method': 'dilate',  # 'ellipse', 'dilate',
         'dist': 3,                       # expansion factor of ellipse
-        'n_pixels_per_process': n_pixels_per_process,   # number of pixels to be processed by eacg worker
-        'medw': (3,) * len(dims),                                # window of median filter
+        # number of pixels to be processed by eacg worker
+        'n_pixels_per_process': n_pixels_per_process,
+        # window of median filter
+        'medw': (3,) * len(dims),
         'thr_method': 'nrg',  # Method of thresholding ('max' or 'nrg')
         'maxthr': 0.1,                                 # Max threshold
         'nrgthr': 0.9999,                              # Energy threshold
@@ -291,7 +302,8 @@ def CNMFSetParms(Y, n_processes, K=30, gSig=[5, 5], ssub=2, tsub=2, p=2, p_ssub=
         # Binary element for determining connectivity
         'ss': np.ones((3,) * len(dims), dtype=np.uint8),
         'nb': nb,                                      # number of background components
-        'method_ls': 'lasso_lars',               # 'nnls_L0'. Nonnegative least square with L0 penalty
+        # 'nnls_L0'. Nonnegative least square with L0 penalty
+        'method_ls': 'lasso_lars',
         #'lasso_lars' lasso lars function from scikit learn
         #'lasso_lars_old' lasso lars from old implementation, will be deprecated
         # whether to update the background components in the spatial phase
@@ -312,12 +324,15 @@ def CNMFSetParms(Y, n_processes, K=30, gSig=[5, 5], ssub=2, tsub=2, p=2, p_ssub=
         'p': p,                      # order of AR indicator dynamics
         'memory_efficient': False,
         # flag for setting non-negative baseline (otherwise b >= min(y))
-        'bas_nonneg': True,
+        'bas_nonneg': False,
         # range of normalized frequencies over which to average
         'noise_range': [.25, .5],
-        'noise_method': 'mean',   # averaging method ('mean','median','logmexp')
-        'lags': 5,                   # number of autocovariance lags to be considered for time constant estimation
-        'fudge_factor': .96,         # bias correction factor (between 0 and 1, close to 1)
+        # averaging method ('mean','median','logmexp')
+        'noise_method': 'mean',
+        # number of autocovariance lags to be considered for time constant estimation
+        'lags': 5,
+        # bias correction factor (between 0 and 1, close to 1)
+        'fudge_factor': .96,
         'nb': nb,                   # number of background components
         'verbosity': False,
         # number of pixels to process at the same time for dot product. Make it
@@ -358,7 +373,7 @@ def extract_DF_F(Yr, A, C,  bl, quantileMin=8, frames_window=200, block_size=400
     quantile_min: float
         quantile minimum of the
 
-    frammes_window: int
+    frames_window: int
         number of frames for running quantile
 
     Returns:
@@ -405,13 +420,82 @@ def extract_DF_F(Yr, A, C,  bl, quantileMin=8, frames_window=200, block_size=400
         C_df = Cf / Df[:, None]
 
     else:
-        Df = scipy.ndimage.percentile_filter(C2, quantileMin, (frames_window, 1))
+        Df = scipy.ndimage.percentile_filter(
+            C2, quantileMin, (frames_window, 1))
         C_df = Cf / Df
 
     return C_df
 
 
 #%%
+def detrend_df_f(A, b, C, f, YrA=None, quantileMin=8, frames_window=200, block_size=400):
+    """ Compute DF/F signal without using the original data.
+    In general much faster than extract_DF_F
+
+    Parameters:
+    -----------
+    A: scipy.sparse.csc_matrix
+        spatial components (from cnmf cnm.A)
+
+    b: ndarray
+        spatial backgrounds
+
+    C: ndarray
+        temporal components (from cnmf cnm.C)
+
+    f: ndarray
+        temporal background components    
+
+    YrA: ndarray
+        residual signals
+
+    quantile_min: float
+        quantile minimum of the
+
+    frames_window: int
+        number of frames for running quantile
+
+    Returns:
+    ----------
+    F_df:
+        the computed Calcium acitivty to the derivative of f
+
+    """
+    if 'csc_matrix' not in str(type(A)):
+        A = scipy.sparse.csc_matrix(A)
+    if 'array' not in str(type(b)):
+        b = b.toarray()
+    if 'array' not in str(type(C)):
+        C = C.toarray()
+    if 'array' not in str(type(f)):
+        f = f.toarray()
+
+    nA = np.sqrt(np.ravel(A.power(2).sum(axis=0)))
+    nA_mat = scipy.sparse.spdiags(nA, 0, nA.shape[0], nA.shape[0])
+    nA_inv_mat = scipy.sparse.spdiags(1. / nA, 0, nA.shape[0], nA.shape[0])
+    A = A * nA_inv_mat
+    C = nA_mat * C
+    if YrA is not None:
+        YrA = nA_mat * YrA
+
+    F = C + YrA if YrA is not None else C
+    B = A.T.dot(b).dot(f)
+    T = C.shape[-1]
+    if frames_window is None or frames_window > T:
+        Fd = np.percentile(F, quantileMin, axis=1)
+        Df = np.percentile(B, quantileMin, axis=1)
+        F_df = (F - Fd) / (Df[:, None] + Fd[:, None])
+    else:
+        Fd = scipy.ndimage.percentile_filter(
+            F, quantileMin, (frames_window, 1))
+        Df = scipy.ndimage.percentile_filter(
+            B, quantileMin, (frames_window, 1))
+        F_df = (F - Fd) / (Df + Fd)
+    return F_df
+
+#%%
+
+
 def manually_refine_components(Y, xxx_todo_changeme, A, C, Cn, thr=0.9, display_numbers=True,
                                max_number=None, cmap=None, **kwargs):
     """Plots contour of spatial components
@@ -505,8 +589,10 @@ def manually_refine_components(Y, xxx_todo_changeme, A, C, Cn, thr=0.9, display_
             coords_x = np.array(list(range(xx - dx, xx + dx + 1)))
             coords_y = coords_y[(coords_y >= 0) & (coords_y < d1)]
             coords_x = coords_x[(coords_x >= 0) & (coords_x < d2)]
-            a3_tiny = A3[coords_y[0]:coords_y[-1] + 1, coords_x[0]:coords_x[-1] + 1, :]
-            y3_tiny = Y[coords_y[0]:coords_y[-1] + 1, coords_x[0]:coords_x[-1] + 1, :]
+            a3_tiny = A3[coords_y[0]:coords_y[-1] +
+                         1, coords_x[0]:coords_x[-1] + 1, :]
+            y3_tiny = Y[coords_y[0]:coords_y[-1] +
+                        1, coords_x[0]:coords_x[-1] + 1, :]
 
             dy_sz, dx_sz = np.shape(a3_tiny)[:-1]
             y2_tiny = np.reshape(y3_tiny, (dx_sz * dy_sz, T), order='F')
@@ -519,7 +605,8 @@ def manually_refine_components(Y, xxx_todo_changeme, A, C, Cn, thr=0.9, display_
 
             a_f = np.zeros((d, 1))
             idxs = np.meshgrid(coords_y, coords_x)
-            a_f[np.ravel_multi_index(idxs, (d1, d2), order='F').flatten()] = a__
+            a_f[np.ravel_multi_index(
+                idxs, (d1, d2), order='F').flatten()] = a__
 
             A = np.concatenate([A, a_f], axis=1)
             C = np.concatenate([C, c__], axis=0)
@@ -568,48 +655,114 @@ def app_vertex_cover(A):
     return np.asarray(L)
 
 
-def update_order(A):
-    """Determines the update order of the temporal components
-
-    this, given the spatial components, by creating a nest of random approximate vertex covers
-    Basically we can update the components that are not overlapping, in parallel
-
+def update_order(A, new_a=None, prev_list=None):
+    '''Determines the update order of the temporal components given the spatial
+    components by creating a nest of random approximate vertex covers
      Input:
      -------
      A:    np.ndarray
           matrix of spatial components (d x K)
+     new_a: sparse array
+          spatial component that is added, in order to efficiently update the orders in online scenarios
+     prev_list: list of list
+          orders from previous iteration, you need to pass if new_a is not None 
 
      Outputs:
      ---------
-     parllcomp:   list of sets
+     O:   list of sets
           list of subsets of components. The components of each subset can be updated in parallel
-
-     len_parrllcomp:  list
+     lo:  list
           length of each subset
 
-    @authors: Eftychios A. Pnevmatikakis, Simons Foundation, 2015
-    """
+    Written by Eftychios A. Pnevmatikakis, Simons Foundation, 2015
+    '''
     K = np.shape(A)[-1]
-    AA = A.T * A
-    AA.setdiag(0)
-    F = (AA) > 0
-    F = F.toarray()
-    rem_ind = np.arange(K)
-    parllcomp = []
-    len_parrllcomp = []
-    while len(rem_ind) > 0:
-        L = np.sort(app_vertex_cover(F[rem_ind, :][:, rem_ind]))
-        if L.size:
-            ord_ind = set(rem_ind) - set(rem_ind[L])
-            rem_ind = rem_ind[L]
-        else:
-            ord_ind = set(rem_ind)
-            rem_ind = []
+    if new_a is None and prev_list is None:
 
-        parllcomp.append(ord_ind)
-        len_parrllcomp.append(len(ord_ind))
+        AA = A.T * A
+        AA.setdiag(0)
+        F = (AA) > 0
+        F = F.toarray()
+        rem_ind = np.arange(K)
+        O = []
+        lo = []
+        while len(rem_ind) > 0:
+            L = np.sort(app_vertex_cover(F[rem_ind, :][:, rem_ind]))
+            if L.size:
+                ord_ind = set(rem_ind) - set(rem_ind[L])
+                rem_ind = rem_ind[L]
+            else:
+                ord_ind = set(rem_ind)
+                rem_ind = []
 
-    return parllcomp[::-1], len_parrllcomp[::-1]
+            O.append(ord_ind)
+            lo.append(len(ord_ind))
+
+        return O[::-1], lo[::-1]
+
+    else:
+
+        if new_a is None or prev_list is None:
+            raise Exception(
+                'In the online update order you need to provide both new_a and prev_list')
+
+        counter = 0
+        AA = A.T.dot(new_a)
+        for group in prev_list:
+
+            #            AA = A[:,list(group)].T.dot(new_a)
+            if AA[list(group)].sum() == 0:
+                group.append(K)
+                counter += 1
+                break
+
+        if counter == 0:
+            if prev_list is not None:
+                prev_list = list(prev_list)
+                prev_list.append([K])
+
+#        prev_list.sort(key=len)
+        count_list = [len(gr) for gr in prev_list]
+
+        return prev_list, count_list
+
+
+#%%
+def order_components(A, C):
+    """Order components based on their maximum temporal value and size
+
+    Parameters:
+    -----------
+    A:   sparse matrix (d x K)
+         spatial components
+
+    C:   matrix or np.ndarray (K x T)
+         temporal components
+
+    Returns:
+    -------
+    A_or:  np.ndarray
+        ordered spatial components
+
+    C_or:  np.ndarray
+        ordered temporal components
+
+    srt:   np.ndarray
+        sorting mapping
+
+    """
+    A = np.array(A.todense())
+    nA2 = np.sqrt(np.sum(A**2, axis=0))
+    K = len(nA2)
+    A = np.array(np.matrix(A) * spdiags(old_div(1, nA2), 0, K, K))
+    nA4 = np.sum(A**4, axis=0)**0.25
+    C = np.array(spdiags(nA2, 0, K, K) * np.matrix(C))
+    mC = np.ndarray.max(np.array(C), axis=1)
+    srt = np.argsort(nA4 * mC)[::-1]
+    A_or = A[:, srt] * spdiags(nA2[srt], 0, K, K)
+    C_or = spdiags(old_div(1., nA2[srt]), 0, K, K) * (C[srt, :])
+
+    return A_or, C_or, srt
 
 
 def update_order_greedy(A, flag_AA=True):
@@ -657,165 +810,83 @@ def update_order_greedy(A, flag_AA=True):
             parllcomp.append([i])
     len_parrllcomp = [len(ls) for ls in parllcomp]
     return parllcomp, len_parrllcomp
+#%%
+
+
+def compute_residuals(Yr_mmap_file, A_, b_, C_, f_, dview=None, block_size=1000, num_blocks_per_run=5):
+    '''compute residuals from memory mapped file and output of CNMF
+        Params:
+        -------            
+        A_,b_,C_,f_: 
+                from CNMF
+
+        block_size: int
+            number of pixels processed together
+
+        num_blocks_per_run: int
+            nnumber of parallel blocks processes 
+
+        Return:
+        -------
+        YrA: ndarray
+            residuals per neuron
+    '''
+    if not ('sparse' in str(type(A_))):
+        A_ = scipy.sparse.coo_matrix(A_)
+
+    Ab = scipy.sparse.hstack((A_, b_)).tocsc()
+
+    Cf = np.vstack((C_, f_))
+
+    nA = np.ravel(Ab.power(2).sum(axis=0))
+
+    if 'mmap' in str(type(Yr_mmap_file)):
+        YA = parallel_dot_product(Yr_mmap_file, Ab, dview=dview, block_size=block_size,
+                                  transpose=True, num_blocks_per_run=num_blocks_per_run) * scipy.sparse.spdiags(old_div(1., nA), 0, Ab.shape[-1], Ab.shape[-1])
+    else:
+        YA = (Ab.T.dot(Yr_mmap_file)).T * \
+            spdiags(old_div(1., nA), 0, Ab.shape[-1], Ab.shape[-1])
+
+    AA = ((Ab.T.dot(Ab)) * scipy.sparse.spdiags(old_div(1., nA),
+                                                0, Ab.shape[-1], Ab.shape[-1])).tocsr()
+
+    return (YA - (AA.T.dot(Cf)).T)[:, :A_.shape[-1]].T
 
 
 #%%
-def order_components(A, C):
-    """Order components based on their maximum temporal value and size
-
+def normalize_AC(A, C, YrA, b, f):
+    """ Normalize to unit norm A and b
     Parameters:
-    -----------
-    A:   sparse matrix (d x K)
-         spatial components
-
-    C:   matrix or np.ndarray (K x T)
-         temporal components
-
-    Returns:
-    -------
-    A_or:  np.ndarray
-        ordered spatial components
-
-    C_or:  np.ndarray
-        ordered temporal components
-
-    srt:   np.ndarray
-        sorting mapping
-
+    ----------
+    A,C,Yr,b,f: 
+        outputs of CNMF
     """
-    A = np.array(A.todense())
-    nA2 = np.sqrt(np.sum(A**2, axis=0))
-    K = len(nA2)
-    A = np.array(np.matrix(A) * spdiags(old_div(1, nA2), 0, K, K))
-    nA4 = np.sum(A**4, axis=0)**0.25
-    C = np.array(spdiags(nA2, 0, K, K) * np.matrix(C))
-    mC = np.ndarray.max(np.array(C), axis=1)
-    srt = np.argsort(nA4 * mC)[::-1]
-    A_or = A[:, srt] * spdiags(nA2[srt], 0, K, K)
-    C_or = spdiags(old_div(1., nA2[srt]), 0, K, K) * (C[srt, :])
+    if 'sparse' in str(type(A)):
+        nA = np.ravel(np.sqrt(A.power(2).sum(0)))
+    else:
+        nA = np.ravel(np.sqrt((A**2).sum(0)))
 
-    return A_or, C_or, srt
+    if A is not None:
+        A /= nA
 
+    if C is not None:
+        C = np.array(C)
+        C *= nA[:, None]
 
-#%%
-# def save_mat_in_chuncks(Yr, num_chunks, shape, mat_name='mat', axis=0):
-#    """ save hdf5 matrix in chunks
-#
-#    Parameters
-#    ----------
-#    file_name: str
-#        file_name of the hdf5 file to be chunked
-#    shape: tuples
-#        shape of the original chunked matrix
-#    idx: list
-#        indexes to slice matrix along axis
-#    mat_name: [optional] string
-#        name prefix for temporary files
-#    axis: int
-#        axis along which to slice the matrix
-#
-#    Returns
-#    ---------
-#    name of the saved file
-#
-#    """
-#
-#    Yr = np.array_split(Yr, num_chunks, axis=axis)
-#    print "splitting array..."
-#    folder = tempfile.mkdtemp()
-#    prev = 0
-#    idxs = []
-#    names = []
-#    for mm in Yr:
-#        mm = np.array(mm)
-#        idxs.append(np.array(range(prev, prev + mm.shape[0])).T)
-#        new_name = os.path.join(folder, mat_name + '_' + str(prev) + '_' + str(len(idxs[-1])))
-#        print "Saving " + new_name
-#        np.save(new_name, mm)
-#        names.append(new_name)
-#        prev = prev + mm.shape[0]
-#
-#    return {'names': names, 'idxs': idxs, 'axis': axis, 'shape': shape}
+    if YrA is not None:
+        YrA = np.array(YrA)
+        YrA *= nA[:, None]
 
+    if b is not None:
+        b = np.array(b)
+        if 'sparse' in str(type(A)):
+            nB = np.ravel(np.sqrt(b.power(2).sum(0)))
+        else:
+            nB = np.ravel(np.sqrt((b**2).sum(0)))
 
-# def evaluate_components(A,Yr,psx):
-#
-#    #%% clustering components
-#    Ys=Yr
-#
-#    #[sn,psx] = get_noise_fft(Ys,options);
-#    #P.sn = sn(:);
-#    #fprintf('  done \n');
-#    psdx = np.sqrt(psx[:,3:]);
-#    X = psdx[:,1:np.minimum(np.shape(psdx)[1],1500)];
-#    #P.psdx = X;
-#    X = X-np.mean(X,axis=1)[:,np.newaxis]#     bsxfun(@minus,X,mean(X,2));     % center
-#    X = X/(+1e-5+np.std(X,axis=1)[:,np.newaxis])
-#
-#    from sklearn.cluster import KMeans
-#    from sklearn.decomposition import PCA,NMF
-#    from sklearn.mixture import GMM
-#    pc=PCA(n_components=5)
-#    nmf=NMF(n_components=2)
-#    nmr=nmf.fit_transform(X)
-#
-#    cp=pc.fit_transform(X)
-#    gmm=GMM(n_components=2)
-#
-#    Cx1=gmm.fit_predict(cp)
-#
-#    L=gmm.predict_proba(cp)
-#
-#    km=KMeans(n_clusters=2)
-#    Cx=km.fit_transform(X)
-#    Cx=km.fit_transform(cp)
-#    Cx=km.cluster_centers_
-#    L=km.labels_
-#    ind=np.argmin(np.mean(Cx[:,-49:],axis=1))
-#    active_pixels = (L==ind)
-#    centroids = Cx;
-#
-#    ff = false(1,size(Am,2));
-#    for i = 1:size(Am,2)
-#        a1 = Am(:,i);
-#        a2 = Am(:,i).*Pm.active_pixels(:);
-#        if sum(a2.^2) >= cl_thr^2*sum(a1.^2)
-#            ff(i) = true;
-#        end
-#    end
+        b = np.atleast_2d(b)
+        f = np.atleast_2d(f)
+        b /= nB[np.newaxis, :]
+        f *= nB[:, np.newaxis]
 
-
-# def extract_DF_F(Y, A, C, i=None):
-#    """Extract DF/F values from spatial/temporal components and background
-#
-#     Parameters
-#     -----------
-#     Y: np.ndarray
-#           input data (d x T)
-#     A: sparse matrix of np.ndarray
-#           Set of spatial including spatial background (d x K)
-#     C: matrix
-#           Set of temporal components including background (K x T)
-#
-#     Returns
-#     -----------
-#     C_df: matrix
-#          temporal components in the DF/F domain
-#     Df:  np.ndarray
-#          vector with baseline values for each trace
-#    """
-#    A2 = A.copy()
-#    A2.data **= 2
-#    nA2 = np.squeeze(np.array(A2.sum(axis=0)))
-#    A = A * diags(old_div(1, nA2), 0)
-#    C = diags(nA2, 0) * C
-#
-#    # if i is None:
-#    #    i = np.argmin(np.max(A,axis=0))
-#
-#    Y = np.matrix(Y)
-#    Yf = A.transpose() * (Y - A * C)  # + A[:,i]*C[i,:])
-#    Df = np.median(np.array(Yf), axis=1)
-#    C_df = diags(old_div(1, Df), 0) * C
-#
-#    return C_df, Df
+    return csc_matrix(A), C, YrA, b, f
