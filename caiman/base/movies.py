@@ -199,8 +199,8 @@ class movie(ts.timeseries):
             shifts, interpolation=interpolation, method=method)
 
         if remove_blanks:
-            max_h, max_w= np.ceil(np.max(shifts, axis=0)).astype('int')
-            min_h, min_w= np.floor(np.min(shifts, axis=0)).astype('int')
+            max_h, max_w = np.ceil(np.max(shifts, axis=0)).astype('int')
+            min_h, min_w = np.floor(np.min(shifts, axis=0)).astype('int')
             self = self.crop(crop_top=max_h, crop_bottom=-min_h + 1,
                              crop_left=max_w, crop_right=-min_w, crop_begin=0, crop_end=0)
 
@@ -351,7 +351,7 @@ class movie(ts.timeseries):
             if method == 'opencv':
                 interpolation = cv2.INTER_CUBIC
             else:
-                interpolation=3
+                interpolation = 3
             #print('cubic interpolation')
             interpolation_type = 'cubic'
 
@@ -359,7 +359,7 @@ class movie(ts.timeseries):
             if method == 'opencv':
                 interpolation = cv2.INTER_NEAREST
             else:
-                interpolation=0
+                interpolation = 0
             #print('nearest interpolation')
             interpolation_type = 'nearest-neighbor'
 
@@ -367,7 +367,7 @@ class movie(ts.timeseries):
             if method == 'opencv':
                 interpolation = cv2.INTER_LINEAR
             else:
-                interpolation=1
+                interpolation = 1
             #print('linear interpolation')
             interpolation_type = 'linear'
 
@@ -383,7 +383,7 @@ class movie(ts.timeseries):
             if method == 'opencv':
                 interpolation = cv2.INTER_LANCZOS4
             else:
-                interpolation=4
+                interpolation = 4
             #print('lanczos/biquartic interpolation')
             interpolation_type = 'Lanczos'
         else:
@@ -411,8 +411,8 @@ class movie(ts.timeseries):
                 raise Exception('Unknown shift  application method')
 
         if remove_blanks:
-            max_h, max_w = np.ceil(np.max(shifts,axis=0)).astype('int')
-            min_h, min_w = np.floor(np.min(shifts,axis=0)).astype('int')
+            max_h, max_w = np.ceil(np.max(shifts, axis=0)).astype('int')
+            min_h, min_w = np.floor(np.min(shifts, axis=0)).astype('int')
             self = self.crop(crop_top=max_h, crop_bottom=-min_h + 1,
                              crop_left=max_w, crop_right=-min_w, crop_begin=0, crop_end=0)
 
@@ -839,9 +839,9 @@ class movie(ts.timeseries):
         if masks.ndim == 2:
             masks = masks[None, :, :]
 
+        nA, _, _ = masks.shape
 
-<<<<<<< HEAD
-        A=np.reshape(masks,(nA,h*w))
+        A = np.reshape(masks, (nA, h * w))
 
         pixelsA = np.sum(A, axis=1)
         A = old_div(A, pixelsA[:, None])  # obtain average over ROI
@@ -912,7 +912,7 @@ class movie(ts.timeseries):
             warnings.warn('Casting the array to float 32')
             self = np.asanyarray(self, dtype=np.float32)
 
-        for idx,fr in enumerate(tqdm(self, desc='Bilateral filter')):
+        for idx, fr in enumerate(tqdm(self, desc='Bilateral filter')):
             self[idx] = cv2.bilateralFilter(
                 fr, diameter, sigmaColor, sigmaSpace)
 
