@@ -1,8 +1,0 @@
-peakutils
-tqdm
-tifffile
-numba 
-pyqtgraph 
-sima
-cvxopt 
-picos
