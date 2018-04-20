@@ -197,11 +197,6 @@ class timeseries(np.ndarray):
             vw = cv2.VideoWriter(file_name, codec, self.fr,
                                  (x, y), isColor=True)
             for d in data:
-            data = data.astype(np.uint8)
-            y, x = data[0].shape
-            vw = cv2.VideoWriter(file_name, codec, self.fr,
-                                 (x, y), isColor=True)
-            for d in data:
                 vw.write(cv2.cvtColor(d, cv2.COLOR_GRAY2BGR))
             vw.release()
 
@@ -225,17 +220,6 @@ class timeseries(np.ndarray):
                 try:
                     dset.attrs["file_name"] = [
                         a.encode('utf8') for a in self.file_name]
-                except:
-                    print('No file name saved')
-                if self.meta_data[0] is not None:
-                    print(self.meta_data)
-                    dset.attrs["meta_data"] = cpk.dumps(self.meta_data)
-
-        elif extension == '.mmap':
-            base_name = name
-
-            T = self.shape[0]
-            dims = self.shape[1:]
                 except:
                     print('No file name saved')
                 if self.meta_data[0] is not None:
