@@ -32,9 +32,11 @@ from ipyparallel import Client
 from skimage.external.tifffile import TiffFile
 from caiman.motion_correction import tile_and_correct, motion_correction_piecewise
 
-ipyparallel = True
-if ipyparallel:
-    c,dview,n_processes = cm.cluster.setup_cluster(backend = 'local', n_processes = 40, single_thread = False)
+parallel = True
+if parallel:
+    if 'dview' in locals():
+        dview.terminate()
+    c, dview, n_processes = cm.cluster.setup_cluster(backend = 'local', n_processes = None, single_thread = False)
 else:
     dview = None
 
@@ -403,7 +405,7 @@ pl.title('After filtering')
 fname_filt = '/home/michael/data/filtered_movie.tif'
 m.save(fname_filt)
 
-c,dview,n_processes = cm.cluster.setup_cluster(backend = 'local',n_processes = 20, single_thread = False)
+#c,dview,n_processes = cm.cluster.setup_cluster(backend = 'local',n_processes = 20, single_thread = False)
 
 ##
 # Compute metrics
