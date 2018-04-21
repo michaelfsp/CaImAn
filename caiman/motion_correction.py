@@ -3544,7 +3544,10 @@ def motion_correction_piecewise_filter(fname, fname_filt, splits, strides, overl
                    newoverlaps, newstrides, shifts_opencv,nonneg_movie  ])
 
     if dview is not None:
-        res = dview.map_sync(tile_and_correct_wrapper_filter,pars)
+        if 'multiprocessing' in str(type(dview)):
+            res = dview.map_async(tile_and_correct_wrapper_filter, pars).get(4294967)
+        else:
+            res = dview.map_sync(tile_and_correct_wrapper_filter,pars)
 
     else:
         res = list(map(tile_and_correct_wrapper_filter,pars))
