@@ -24,6 +24,7 @@ from builtins import range
 from past.utils import old_div
 import cv2
 import os
+import functools
 import sys
 import scipy.ndimage
 import scipy
@@ -918,7 +919,7 @@ class movie(ts.timeseries):
 
         return self
 
-    def filter_2D(self, kernel, anchor=(-1,-1), delta=0, ddepth=-1, borderType=cv2.BORDER_REPLICATE):
+    def filter_2D(self, kernel, anchor=(-1,-1), delta=0, ddepth=-1, borderType=cv2.BORDER_REPLICATE, dview=None):
         """
         Compute gaussian blur in 2D. Might be useful when motion correcting
 
@@ -937,8 +938,18 @@ class movie(ts.timeseries):
             blurred movie
         """
 
-        for idx, fr in enumerate(tqdm(self, desc='Filter 2D')):
-            self[idx] = cv2.filter2D(fr,ddepth=ddepth,kernel=kernel,anchor=anchor,delta=delta,borderType=borderType)
+        if dview:
+            filter2D = functools.partial(cv2.filter2D, ddepth=ddepth,kernel=kernel,anchor=anchor,delta=delta,borderType=borderType)
+            if 'multiprocessing' in str(type(dview)):
+                it = dview.imap(filter2D, self)
+            else:
+                it = dview.map_sync(filter2D, self)
+            for idx, f in enumerate(tqdm(it, desc='Filter 2D', total=len(self))):
+                self[idx] = f
+
+        else:
+            for idx, fr in enumerate(tqdm(self, desc='Filter 2D')):
+                self[idx] = cv2.filter2D(fr,ddepth=ddepth,kernel=kernel,anchor=anchor,delta=delta,borderType=borderType)
 
         return self
 

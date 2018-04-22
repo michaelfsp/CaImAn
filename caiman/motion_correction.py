@@ -455,7 +455,7 @@ class MotionCorrect1P(object):
                                  g_sigma_background = self.g_sigma_background,
                                  k_std_smooth = self.k_std_smooth,
                                  k_std_background = self.k_std_background,
-                                 crop=crop)
+                                 crop=crop, dview=self.dview)
         #m_filt = filter_bilateral(m)
 
         m_filt -= np.nanmin(m_filt)
@@ -2624,7 +2624,7 @@ def compute_metrics_motion_correction(fname, final_size_x, final_size_y, swap_di
     return tmpl, correlations, flows, norms, smoothness, img_corr, smoothness_corr
 
 
-def compute_metrics_filter(fname, final_size_x, final_size_y, swap_dim, g_sigma_smooth=1.5, g_sigma_background=15, k_std_smooth=4, k_std_background=4):
+def compute_metrics_filter(fname, final_size_x, final_size_y, swap_dim, g_sigma_smooth=1.5, g_sigma_background=15, k_std_smooth=4, k_std_background=4, dview=None):
     # get standard metrics
     tmpl, correlations, flows, norms, smoothness, img_corr, smoothness_corr = compute_metrics_motion_correction(fname, final_size_x, final_size_y, swap_dim)
 
@@ -2672,7 +2672,7 @@ def compute_metrics_filter(fname, final_size_x, final_size_y, swap_dim, g_sigma_
     m = filter_combined(m, g_sigma_smooth = g_sigma_smooth,
                          g_sigma_background = g_sigma_background,
                          k_std_smooth = k_std_smooth,
-                         k_std_background = k_std_background)
+                         k_std_background = k_std_background, dview=dview)
     m -= m.min()
     m.save(fname_filt)
 
@@ -3134,7 +3134,7 @@ def filter(movie, g_sigma_smooth = 1.4, g_sigma_background = 14.,
 
 def filter_combined(movie, g_sigma_smooth = 1.4, g_sigma_background = 14.,
            k_std_smooth = 6, k_std_background = 4, crop=False,
-           dtype=np.float32, borderType=cv2.BORDER_REFLECT_101):
+           dtype=np.float32, borderType=cv2.BORDER_REFLECT_101, dview=None):
     """Filter movie.
     """
     import scipy
@@ -3166,7 +3166,7 @@ def filter_combined(movie, g_sigma_smooth = 1.4, g_sigma_background = 14.,
         kernel_combined = kernel_background
 
     # ddepth=-1 yields an output filtered image of same type as input
-    movie.filter_2D(kernel_combined, ddepth=-1, borderType=borderType)
+    movie.filter_2D(kernel_combined, ddepth=-1, borderType=borderType, dview=dview)
 
     if crop:
         bound = int(np.ceil(kernel_combined.shape[0])/2)
