@@ -61,6 +61,8 @@ except:
     print('tifffile package not found, using skimage.external.tifffile')
     from skimage.external import tifffile as tifffile
 
+import functools
+import itertools
 import gc
 import os
 from cv2 import dft as fftn
@@ -2540,11 +2542,14 @@ def dft_sharpness(img, shift=False):
 
 
 #%%
+def _optflowfun(args):
+    #args = prev, next, flow, pyr_scale, levels, winsize, iterations, poly_n, poly_sigma, flags
+    return cv2.calcOpticalFlowFarneback(*args)
 
 
 def compute_metrics_motion_correction(fname, final_size_x, final_size_y, swap_dim, pyr_scale=.5, levels=3,
                                       winsize=100, iterations=15, poly_n=5, poly_sigma=1.2 / 5, flags=0,
-                                      play_flow=False, resize_fact_flow=.2, template=None):
+                                      play_flow=False, resize_fact_flow=.2, template=None, dview=None):
     #todo: todocument
     # cv2.OPTFLOW_FARNEBACK_GAUSSIAN
     import scipy
@@ -2594,10 +2599,24 @@ def compute_metrics_motion_correction(fname, final_size_x, final_size_y, swap_di
     norms = []
     flows = []
     count = 0
-    for fr in tqdm(m, desc='Calculating optical flow for frame'):
+
+    #optical_flow_fun = functools.partial(cv2.calcOpticalFlowFarneback, flow=None, pyr_scale=pyr_scale, levels=levels, winsize=winsize, iterations=iterations, poly_n=poly_n, poly_sigma=poly_sigma, flags=flags)
+
+    if dview is not None:
+        if 'multiprocessing' in str(type(dview)):
+            args = zip(m, itertools.repeat(tmpl), itertools.repeat(None),
+                       itertools.repeat(pyr_scale), itertools.repeat(levels),
+                       itertools.repeat(winsize), itertools.repeat(iterations),
+                       itertools.repeat(poly_n), itertools.repeat(poly_sigma),
+                       itertools.repeat(flags))
+            flow_all = dview.imap(_optflowfun, args)
+#            flow_all = map(optflowfun, args)
+
+    else:
+        flow_all = itertools.starmap(optical_flow_fun, itertools.repeat(tmpl), m)
+
+    for flow, fr in zip(flow_all, m):#tqdm(zip(flow_all, m), desc='Calculating optical flow for frame'):
         count += 1
-        flow = cv2.calcOpticalFlowFarneback(
-            tmpl, fr, None, pyr_scale, levels, winsize, iterations, poly_n, poly_sigma, flags)
 
         if play_flow:
             pl.subplot(1, 3, 1)
@@ -2624,32 +2643,34 @@ def compute_metrics_motion_correction(fname, final_size_x, final_size_y, swap_di
     return tmpl, correlations, flows, norms, smoothness, img_corr, smoothness_corr
 
 
-def compute_metrics_filter(fname, final_size_x, final_size_y, swap_dim, g_sigma_smooth=1.5, g_sigma_background=15, k_std_smooth=4, k_std_background=4, dview=None):
-    # get standard metrics
-    tmpl, correlations, flows, norms, smoothness, img_corr, smoothness_corr = compute_metrics_motion_correction(fname, final_size_x, final_size_y, swap_dim)
+def compute_metrics_filter(fname, final_size_x, final_size_y, swap_dim, g_sigma_smooth=1.5, g_sigma_background=15, k_std_smooth=4, k_std_background=4, metrics_original=False, dview=None):
+    if metrics_original:
+        # get standard metrics
+        tmpl, correlations, flows, norms, smoothness, img_corr, smoothness_corr = compute_metrics_motion_correction(fname, final_size_x, final_size_y, swap_dim, dview=dview)
 
-    # compute ROF
-    rof = np.mean(np.linalg.norm(np.vstack(flows), axis=2))
-    rof_std = np.std(np.linalg.norm(np.vstack(flows), axis=2))
-    # rof_std_t: for each frame an average norm is calculated and std is calculated on these averages
-    rof_std_t = np.std(np.mean([np.linalg.norm(f, axis=2) for f in flows],axis=(1,2)))
+        # compute ROF
+        rof = np.mean(np.linalg.norm(np.vstack(flows), axis=2))
+        rof_std = np.std(np.linalg.norm(np.vstack(flows), axis=2))
+        # rof_std_t: for each frame an average norm is calculated and std is calculated on these averages
+        rof_std_t = np.std(np.mean([np.linalg.norm(f, axis=2) for f in flows],axis=(1,2)))
 
-    # rof_std_loc: for each pixel an average norm is calculated and std is calculated on these averages
-    flows_norms = [np.linalg.norm(f, axis=2) for f in flows]
-    avg_flow_loc = np.mean(np.dstack(flows_norms), axis=2)
-    rof_std_loc = np.std(avg_flow_loc)
+        # rof_std_loc: for each pixel an average norm is calculated and std is calculated on these averages
+        flows_norms = [np.linalg.norm(f, axis=2) for f in flows]
+        avg_flow_loc = np.mean(np.dstack(flows_norms), axis=2)
+        rof_std_loc = np.std(avg_flow_loc)
+
+        # compute alternative sharpness metrics
+        dct_sharp = dct_sharpness(avg_frame)
+        dct_sharp_corr = dct_sharpness(img_corr)
+
+        dft_sharp = dft_sharpness(avg_frame)
+        dft_sharp_corr = dft_sharpness(img_corr)
+
+        metrics_original = (smoothness, smoothness_corr, rof, rof_std, rof_std_t, rof_std_loc, dct_sharp, dct_sharp_corr, dft_sharp, dft_sharp_corr)
 
     # load movie to calculate avg frame and filter
     m = cm.load(fname, in_memory=True)
     avg_frame = np.mean(m, axis=0)
-
-    # compute alternative sharpness metrics
-    dct_sharp = dct_sharpness(avg_frame)
-    dct_sharp_corr = dct_sharpness(img_corr)
-
-    dft_sharp = dft_sharpness(avg_frame)
-    dft_sharp_corr = dft_sharpness(img_corr)
-
 
     # filter video and then calculate metrics for filtered videos
     fname_filt = os.path.splitext(fname)[0] + '_filtered.hdf5'
@@ -2663,7 +2684,7 @@ def compute_metrics_filter(fname, final_size_x, final_size_y, swap_dim, g_sigma_
 
     if max_shft_y_1 == 0:
         max_shft_y_1 = None
-    print ([max_shft_x,max_shft_x_1,max_shft_y,max_shft_y_1])
+    #print ([max_shft_x,max_shft_x_1,max_shft_y,max_shft_y_1])
     m = m[:,max_shft_x:max_shft_x_1,max_shft_y:max_shft_y_1]
     if np.sum(np.isnan(m))>0:
         print(m.shape)
@@ -2680,7 +2701,7 @@ def compute_metrics_filter(fname, final_size_x, final_size_y, swap_dim, g_sigma_
 
     del m
 
-    tmpl_f, correlations_f, flows_f, norms_f, smoothness_f, img_corr_f, smoothness_corr_f = compute_metrics_motion_correction(fname_filt, final_size_x, final_size_y, swap_dim)
+    tmpl_f, correlations_f, flows_f, norms_f, smoothness_f, img_corr_f, smoothness_corr_f = compute_metrics_motion_correction(fname_filt, final_size_x, final_size_y, swap_dim, dview=dview)
 
     # compute ROF
     rof_f = np.mean(np.linalg.norm(np.vstack(flows_f), axis=2))
@@ -2701,11 +2722,12 @@ def compute_metrics_filter(fname, final_size_x, final_size_y, swap_dim, g_sigma_
     dft_sharp_corr_f = dft_sharpness(img_corr_f)
 
     # metrics for original video
-    metrics_original = (smoothness, smoothness_corr, rof, rof_std, rof_std_t, rof_std_loc, dct_sharp, dct_sharp_corr, dft_sharp, dft_sharp_corr)
     metrics_filtered = (smoothness_f, smoothness_corr_f, rof_f, rof_std_f, rof_std_t_f, rof_std_loc_f, dct_sharp_f, dct_sharp_corr_f, dft_sharp_f, dft_sharp_corr_f)
 
-
-    return (metrics_original, metrics_filtered)
+    if metrics_original:
+        return (metrics_original, metrics_filtered)
+    else:
+        return metrics_filtered
 
 
 #%%
