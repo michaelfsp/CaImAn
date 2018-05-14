@@ -3151,7 +3151,7 @@ def filter_combined(movie, g_sigma_smooth = 1.4, g_sigma_background = 14.,
     kernel_background = cv2.getGaussianKernel(k_size_background, g_sigma_background)
     kernel_background = kernel_background*kernel_background.transpose()
 
-    center_i = int(k_size_background/2)-1
+    center_i = int(k_size_background/2)
     kernel_background[center_i, center_i] = 0
     kernel_background /= np.sum(kernel_background)
     kernel_background = -kernel_background
