@@ -80,6 +80,91 @@ from skimage.external.tifffile import imread
 #%%
 
 
+def sgolay2d ( z, window_size, order, derivative = None ):
+    """
+    """
+    import scipy.signal
+    # number of terms in the polynomial expression
+    n_terms = ( order + 1 ) * ( order + 2 ) / 2.0
+
+    if  window_size % 2 == 0:
+        raise ValueError( 'window_size must be odd' )
+
+    if window_size ** 2 < n_terms:
+        raise ValueError( 'order is too high for the window size' )
+
+    half_size = window_size // 2
+
+    # exponents of the polynomial.
+    # p(x,y) = a0 + a1*x + a2*y + a3*x^2 + a4*y^2 + a5*x*y + ...
+    # this line gives a list of two item tuple. Each tuple contains
+    # the exponents of the k-th term. First element of tuple is for x
+    # second element for y.
+    # Ex. exps = [(0,0), (1,0), (0,1), (2,0), (1,1), (0,2), ...]
+    exps = [ ( k - n, n ) for k in range( order + 1 ) for n in range( k + 1 ) ]
+
+    # coordinates of points
+    ind = np.arange( -half_size, half_size + 1, dtype = np.float64 )
+    dx = np.repeat( ind, window_size )
+    dy = np.tile( ind, [window_size, 1] ).reshape( window_size ** 2, )
+
+    # build matrix of system of equation
+    A = np.empty( ( window_size ** 2, len( exps ) ) )
+    for i, exp in enumerate( exps ):
+        A[:, i] = ( dx ** exp[0] ) * ( dy ** exp[1] )
+
+    # pad input array with appropriate values at the four borders
+    new_shape = z.shape[0] + 2 * half_size, z.shape[1] + 2 * half_size
+    Z = np.zeros( ( new_shape ) )
+    # top band
+    band = z[0, :]
+    Z[:half_size, half_size:-half_size] = band - np.abs( np.flipud( z[1:half_size + 1, :] ) - band )
+    # bottom band
+    band = z[-1, :]
+    Z[-half_size:, half_size:-half_size] = band + np.abs( np.flipud( z[-half_size - 1:-1, :] ) - band )
+    # left band
+    band = np.tile( z[:, 0].reshape( -1, 1 ), [1, half_size] )
+    Z[half_size:-half_size, :half_size] = band - np.abs( np.fliplr( z[:, 1:half_size + 1] ) - band )
+    # right band
+    band = np.tile( z[:, -1].reshape( -1, 1 ), [1, half_size] )
+    Z[half_size:-half_size, -half_size:] = band + np.abs( np.fliplr( z[:, -half_size - 1:-1] ) - band )
+    # central band
+    Z[half_size:-half_size, half_size:-half_size] = z
+
+    # top left corner
+    band = z[0, 0]
+    Z[:half_size, :half_size] = band - np.abs( np.flipud( np.fliplr( z[1:half_size + 1, 1:half_size + 1] ) ) - band )
+    # bottom right corner
+    band = z[-1, -1]
+    Z[-half_size:, -half_size:] = band + np.abs( np.flipud( np.fliplr( z[-half_size - 1:-1, -half_size - 1:-1] ) ) - band )
+
+    # top right corner
+    band = Z[half_size, -half_size:]
+    Z[:half_size, -half_size:] = band - np.abs( np.flipud( Z[half_size + 1:2 * half_size + 1, -half_size:] ) - band )
+    # bottom left corner
+    band = Z[-half_size:, half_size].reshape( -1, 1 )
+    Z[-half_size:, :half_size] = band - np.abs( np.fliplr( Z[-half_size:, half_size + 1:2 * half_size + 1] ) - band )
+
+    # solve system and convolve
+    if derivative == None:
+        m = np.linalg.pinv( A )[0].reshape( ( window_size, -1 ) )
+        return scipy.signal.fftconvolve( Z, m, mode = 'valid' )
+    elif derivative == 'col':
+        c = np.linalg.pinv( A )[1].reshape( ( window_size, -1 ) )
+        return scipy.signal.fftconvolve( Z, -c, mode = 'valid' )
+    elif derivative == 'row':
+        r = np.linalg.pinv( A )[2].reshape( ( window_size, -1 ) )
+        return scipy.signal.fftconvolve( Z, -r, mode = 'valid' )
+    elif derivative == 'both':
+        c = np.linalg.pinv( A )[1].reshape( ( window_size, -1 ) )
+        r = np.linalg.pinv( A )[2].reshape( ( window_size, -1 ) )
+        #import ipdb; ipdb.set_trace()
+        #return Z, scipy.signal.fftconvolve( Z, -r, mode = 'valid' ), scipy.signal.fftconvolve( Z, -c, mode = 'valid' )
+        #return scipy.signal.filtfilt( Z, -r), scipy.signal.filtfilt( Z, -c)
+        #return scipy.ndimage.filters.convolve(z, -r, mode = 'nearest'), scipy.ndimage.filters.convolve(z, -c, mode = 'nearest')
+        return scipy.signal.fftconvolve( z, -r, mode = 'valid' ), scipy.signal.fftconvolve( z, -c, mode = 'valid' )
+
+
 class MotionCorrect(object):
     """
         class implementing motion correction operations
@@ -420,7 +505,8 @@ class MotionCorrect1P(object):
                  num_splits_to_process_els=[7,None], upsample_factor_grid=4,
                  max_deviation_rigid=3, shifts_opencv = True,
                  nonneg_movie = False, g_sigma_smooth=1.4,
-                 g_sigma_background=14., k_std_smooth=6, k_std_background=4):
+                 g_sigma_background=14., k_std_smooth=6, k_std_background=4,
+                 window_size=33, order=2, savgolay=True):
         """
         Constructor class for motion correction operations
 
@@ -447,18 +533,30 @@ class MotionCorrect1P(object):
         self.g_sigma_background = g_sigma_background
         self.k_std_smooth = k_std_smooth
         self.k_std_background = k_std_background
+
+        self.window_size = window_size
+        self.order = order
+        self.savgolay = savgolay
         #FIXME: make it work for any fname extension
         self.fname_filt = fname.rstrip('.tif')+'_filt.hdf5'
 
 
-    def filter_and_save(self, crop=False):
+    def filter_and_save(self, crop=False, savgolay=False):
         m = cm.load(self.fname)
-        m_filt = filter_combined(m, g_sigma_smooth = self.g_sigma_smooth,
-                                 g_sigma_background = self.g_sigma_background,
-                                 k_std_smooth = self.k_std_smooth,
-                                 k_std_background = self.k_std_background,
-                                 crop=crop, dview=self.dview)
-        #m_filt = filter_bilateral(m)
+
+        if savgolay:
+            m_filt = filter_combined_savgolay(m, g_sigma_smooth = self.g_sigma_smooth,
+                                     window_size = self.window_size,
+                                     k_std_smooth = self.k_std_smooth,
+                                     order = self.order,
+                                     crop=crop, dview=self.dview)
+        else:
+            m_filt = filter_combined(m, g_sigma_smooth = self.g_sigma_smooth,
+                                     g_sigma_background = self.g_sigma_background,
+                                     k_std_smooth = self.k_std_smooth,
+                                     k_std_background = self.k_std_background,
+                                     crop=crop, dview=self.dview)
+            #m_filt = filter_bilateral(m)
 
         m_filt -= np.nanmin(m_filt)
         #m_filt = 65535 * (m_filt-m_filt.min())/(m_filt.max()-m_filt.min())
@@ -566,7 +664,7 @@ class MotionCorrect1P(object):
 
         #if not os.path.isfile(self.fname_filt):
         #    self.filter_and_save()
-        self.filter_and_save(crop=True)
+        self.filter_and_save(crop=True, savgolay=self.savgolay)
 
 
         self.fname_tot_rig, self.total_template_rig_filt, self.templates_rig_filt, self.shifts_rig = motion_correct_batch_rigid_filter(self.fname, self.fname_filt,
@@ -3188,12 +3286,120 @@ def filter_combined(movie, g_sigma_smooth = 1.4, g_sigma_background = 14.,
         kernel_combined = kernel_background
 
     # ddepth=-1 yields an output filtered image of same type as input
+    import ipdb; ipdb.set_trace()
     movie.filter_2D(kernel_combined, ddepth=-1, borderType=borderType, dview=dview)
 
     if crop:
         bound = int(np.ceil(kernel_combined.shape[0])/2)
         movie = movie.crop(bound, bound, bound, bound)
     return movie
+
+
+def filter_combined_savgolay(movie, window_size=33, order=2, g_sigma_smooth=1.4, k_std_smooth=4,
+                             crop=False, dtype=np.float32, borderType=cv2.BORDER_REFLECT_101, dview=None):
+    """Filter movie.
+    """
+    import scipy
+
+    next_odd_int = lambda x: int(np.ceil(x) // 2 * 2 + 1)
+
+    #TODO: Add memory_efficient option where matrix is not casted as a float
+    #TODO: Make parallel
+    #TODO: Option to process in batches
+    # kernel sizes have to be odd ints for openCV gaussianBlur
+
+    # number of terms in the polynomial expression
+    n_terms = ( order + 1 ) * ( order + 2 ) / 2.0
+
+    if  window_size % 2 == 0:
+        raise ValueError( 'window_size must be odd' )
+
+    if window_size ** 2 < n_terms:
+        raise ValueError( 'order is too high for the window size' )
+
+    half_size = window_size // 2
+
+    # exponents of the polynomial.
+    # p(x,y) = a0 + a1*x + a2*y + a3*x^2 + a4*y^2 + a5*x*y + ...
+    # this line gives a list of two item tuple. Each tuple contains
+    # the exponents of the k-th term. First element of tuple is for x
+    # second element for y.
+    # Ex. exps = [(0,0), (1,0), (0,1), (2,0), (1,1), (0,2), ...]
+    exps = [ ( k - n, n ) for k in range( order + 1 ) for n in range( k + 1 ) ]
+
+    # coordinates of points
+    ind = np.arange( -half_size, half_size + 1, dtype = np.float64 )
+    dx = np.repeat( ind, window_size )
+    dy = np.tile( ind, [window_size, 1] ).reshape( window_size ** 2, )
+
+    # build matrix of system of equation
+    A = np.empty( ( window_size ** 2, len( exps ) ) )
+    for i, exp in enumerate( exps ):
+        A[:, i] = ( dx ** exp[0] ) * ( dy ** exp[1] )
+
+#    z = movie[0,:,:]
+#    # pad input array with appropriate values at the four borders
+#    new_shape = z.shape[0] + 2 * half_size, z.shape[1] + 2 * half_size
+#    Z = np.zeros( ( new_shape ) )
+#    # top band
+#    band = z[0, :]
+#    Z[:half_size, half_size:-half_size] = band - np.abs( np.flipud( z[1:half_size + 1, :] ) - band )
+#    # bottom band
+#    band = z[-1, :]
+#    Z[-half_size:, half_size:-half_size] = band + np.abs( np.flipud( z[-half_size - 1:-1, :] ) - band )
+#    # left band
+#    band = np.tile( z[:, 0].reshape( -1, 1 ), [1, half_size] )
+#    Z[half_size:-half_size, :half_size] = band - np.abs( np.fliplr( z[:, 1:half_size + 1] ) - band )
+#    # right band
+#    band = np.tile( z[:, -1].reshape( -1, 1 ), [1, half_size] )
+#    Z[half_size:-half_size, -half_size:] = band + np.abs( np.fliplr( z[:, -half_size - 1:-1] ) - band )
+#    # central band
+#    Z[half_size:-half_size, half_size:-half_size] = z
+#
+#    # top left corner
+#    band = z[0, 0]
+#    Z[:half_size, :half_size] = band - np.abs( np.flipud( np.fliplr( z[1:half_size + 1, 1:half_size + 1] ) ) - band )
+#    # bottom right corner
+#    band = z[-1, -1]
+#    Z[-half_size:, -half_size:] = band + np.abs( np.flipud( np.fliplr( z[-half_size - 1:-1, -half_size - 1:-1] ) ) - band )
+#
+#    # top right corner
+#    band = Z[half_size, -half_size:]
+#    Z[:half_size, -half_size:] = band - np.abs( np.flipud( Z[half_size + 1:2 * half_size + 1, -half_size:] ) - band )
+#    # bottom left corner
+#    band = Z[-half_size:, half_size].reshape( -1, 1 )
+#    Z[-half_size:, :half_size] = band - np.abs( np.fliplr( Z[-half_size:, half_size + 1:2 * half_size + 1] ) - band )
+
+    m = np.linalg.pinv( A )[0].reshape( ( window_size, -1 ) )
+
+    if movie.dtype != dtype:
+        movie = movie.astype(dtype)
+
+    kernel_background = m
+
+    center_i = int(kernel_background.shape[0]/2)
+    kernel_background[center_i, center_i] = 0
+    kernel_background /= np.sum(kernel_background)
+    kernel_background = -kernel_background
+    kernel_background[center_i, center_i] = 1.# this is equivalent to adding a delta fun.
+
+    if g_sigma_smooth:
+        k_size_smooth = next_odd_int(k_std_smooth*g_sigma_smooth)
+        kernel_smooth = cv2.getGaussianKernel(k_size_smooth, g_sigma_smooth)
+        kernel_smooth = kernel_smooth*kernel_smooth.transpose()
+        kernel_combined = scipy.signal.convolve2d(kernel_background, kernel_smooth, 'same')
+    else:
+        kernel_combined = kernel_background
+
+    import ipdb; ipdb.set_trace()
+    # ddepth=-1 yields an output filtered image of same type as input
+    movie.filter_2D(kernel_combined, ddepth=-1, borderType=borderType, dview=dview)
+
+    if crop:
+        bound = int(np.ceil(kernel_combined.shape[0])/2)
+        movie = movie.crop(bound, bound, bound, bound)
+    return movie
+
 
 
 def filter_bilateral(movie, d_smooth=5, sigma_color_smooth=1000,
