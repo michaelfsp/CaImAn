@@ -190,7 +190,7 @@ def acc_correct_single_file(fdir, fname_tif, crop_bottom=0, crop_top=0, crop_lef
 
     del(m)
 
-    shifts_opencv = False
+    shifts_opencv = True
     min_mov = 0
     max_shifts = (10,10)
 
@@ -211,7 +211,10 @@ def acc_correct_single_file(fdir, fname_tif, crop_bottom=0, crop_top=0, crop_lef
 
     #mcf.motion_correct_rigid(save_movie=True, remove_blanks=True)
 
-    mcf = cm.motion_correction.MotionCorrect1P(fname_tif, min_mov=min_mov, max_shifts=max_shifts, shifts_opencv=shifts_opencv, dview=dview, niter_rig=2, splits_rig=4, max_deviation_rigid=max_dev, strides=strides, overlaps=overlaps, upsample_factor_grid=upsample_factor_grid, niter_els=2, splits_els=4, num_splits_to_process_els=[None, None], g_sigma_smooth=g_sigma_smooth, g_sigma_background=g_sigma_background, k_std_smooth=k_std_smooth, k_std_background=k_std_background, window_size=59, order=2, savgolay=True)
+    #mcf = cm.motion_correction.MotionCorrect1P(fname_tif, min_mov=min_mov, max_shifts=max_shifts, shifts_opencv=shifts_opencv, dview=dview, niter_rig=2, splits_rig=4, max_deviation_rigid=max_dev, strides=strides, overlaps=overlaps, upsample_factor_grid=upsample_factor_grid, niter_els=2, splits_els=4, num_splits_to_process_els=[None, None], g_sigma_smooth=g_sigma_smooth, g_sigma_background=g_sigma_background, k_std_smooth=k_std_smooth, k_std_background=k_std_background, window_size=59, order=2, savgolay=True)
+
+
+    #mcf = cm.motion_correction.MotionCorrect(fname_tif, min_mov=min_mov, max_shifts=max_shifts, shifts_opencv=shifts_opencv, dview=dview, niter_rig=2, splits_rig=4, max_deviation_rigid=max_dev, strides=strides, overlaps=overlaps, upsample_factor_grid=upsample_factor_grid, splits_els=4, num_splits_to_process_els=[None, None], gSig_filt=[14,14])
 
     #import warnings
     #warnings.simplefilter('error')
@@ -219,7 +222,11 @@ def acc_correct_single_file(fdir, fname_tif, crop_bottom=0, crop_top=0, crop_lef
     import mkl
     mkl.set_num_threads(6)
 
-    mcf.motion_correct_pwrigid(save_movie=True)#, remove_blanks=True)
+    #mcf.motion_correct_pwrigid(save_movie=True)#, remove_blanks=True)
+    #m = cm.load(mcf.fname_tot_els)
+
+    mcf = cm.motion_correction.motion_correct_oneP_nonrigid(fname_tif, [int(g_sigma_background)]*2, max_shifts, strides, overlaps, 4, 4, max_dev, dview, 4)
+
     m = cm.load(mcf.fname_tot_els)
 
     #mcf.motion_correct_rigid(save_movie=True, remove_blanks=True)

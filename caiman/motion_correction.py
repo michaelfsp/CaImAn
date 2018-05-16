@@ -3383,13 +3383,50 @@ def filter_combined_savgolay(movie, window_size=33, order=2, g_sigma_smooth=1.4,
     kernel_background = -kernel_background
     kernel_background[center_i, center_i] = 1.# this is equivalent to adding a delta fun.
 
-    if g_sigma_smooth:
-        k_size_smooth = next_odd_int(k_std_smooth*g_sigma_smooth)
-        kernel_smooth = cv2.getGaussianKernel(k_size_smooth, g_sigma_smooth)
-        kernel_smooth = kernel_smooth*kernel_smooth.transpose()
-        kernel_combined = scipy.signal.convolve2d(kernel_background, kernel_smooth, 'same')
+    if True:
+        if g_sigma_smooth:
+            k_size_smooth = next_odd_int(k_std_smooth*g_sigma_smooth)
+            kernel_smooth = cv2.getGaussianKernel(k_size_smooth, g_sigma_smooth)
+            kernel_smooth = kernel_smooth*kernel_smooth.transpose()
+            kernel_combined = scipy.signal.convolve2d(kernel_background, kernel_smooth, 'same')
+        else:
+            kernel_combined = kernel_background
+
     else:
-        kernel_combined = kernel_background
+        order = 3
+        window_size =7
+
+        n_terms = ( order + 1 ) * ( order + 2 ) / 2.0
+
+        if  window_size % 2 == 0:
+            raise ValueError( 'window_size must be odd' )
+
+        if window_size ** 2 < n_terms:
+            raise ValueError( 'order is too high for the window size' )
+
+        half_size = window_size // 2
+
+        # exponents of the polynomial.
+        # p(x,y) = a0 + a1*x + a2*y + a3*x^2 + a4*y^2 + a5*x*y + ...
+        # this line gives a list of two item tuple. Each tuple contains
+        # the exponents of the k-th term. First element of tuple is for x
+        # second element for y.
+        # Ex. exps = [(0,0), (1,0), (0,1), (2,0), (1,1), (0,2), ...]
+        exps = [ ( k - n, n ) for k in range( order + 1 ) for n in range( k + 1 ) ]
+
+        # coordinates of points
+        ind = np.arange( -half_size, half_size + 1, dtype = np.float64 )
+        dx = np.repeat( ind, window_size )
+        dy = np.tile( ind, [window_size, 1] ).reshape( window_size ** 2, )
+
+        # build matrix of system of equation
+        A = np.empty( ( window_size ** 2, len( exps ) ) )
+        for i, exp in enumerate( exps ):
+            A[:, i] = ( dx ** exp[0] ) * ( dy ** exp[1] )
+
+        kernel_smooth = np.linalg.pinv( A )[0].reshape( ( window_size, -1 ) )
+        kernel_combined = scipy.signal.convolve2d(kernel_background, kernel_smooth, 'same')
+
 
     import ipdb; ipdb.set_trace()
     # ddepth=-1 yields an output filtered image of same type as input
