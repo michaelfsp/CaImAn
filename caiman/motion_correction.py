@@ -3364,12 +3364,14 @@ def motion_correct_batch_rigid_filter(fname, fname_filt, max_shifts, dview = Non
 
     if save_movie_rigid:
         if remove_blanks:
-            max_h,max_w= np.ceil(np.max(shifts,axis=0)).astype('int')
-            min_h,min_w= np.floor(np.min(shifts,axis=0)).astype('int')
+            #FIXME: not sure why adding and subtracting 1 is necessary for some movies to not end with any NaN values
+            max_h, max_w = np.ceil(np.max(shifts,axis=0)).astype('int') + 1
+            min_h, min_w = np.floor(np.min(shifts,axis=0)).astype('int') - 1
 
             #TODO: make this a bit more elegant by not requiring it to be reloaded but rather editing the memmap directly
             m = cm.load(fname_tot_rig)
-            m = m.crop(crop_top=max_h,crop_bottom=-min_h+1,crop_left=max_w,crop_right=-min_w,crop_begin=0,crop_end=0)
+            #import ipdb; ipdb.set_trace()
+            m = m.crop(crop_top=max_h, crop_bottom=-min_h,crop_left=max_w,crop_right=-min_w,crop_begin=0,crop_end=0)
             fname_tot_rig = fname_tot_rig + '_.hdf5'
             m.save(fname_tot_rig)
 
