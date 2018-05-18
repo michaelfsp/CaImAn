@@ -176,7 +176,8 @@ class timeseries(np.ndarray):
                 data = data.astype(np.int32)
                 imsave(file_name, self.astype(np.float32))
             else:
-                imsave(file_name, self)
+                imsave(file_name, self.astype(np.uint16))
+
 
         elif extension == '.npz':
             np.savez(file_name, input_arr=self, start_time=self.start_time,
